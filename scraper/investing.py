@@ -18,8 +18,7 @@ TARGET_INSTRUMENT_URLS = {
 
 class InvestingScraper:
     """
-    Playwright scraper using a persistent browser profile to extract live Investing.com watchlist data.
-    Supports dynamic watchlist table extraction and direct instrument fallback.
+    Playwright scraper using persistent browser tabs to continuously stream live Investing.com market data.
     """
 
     def __init__(self, config: Config):
@@ -29,9 +28,10 @@ class InvestingScraper:
         self.playwright: Optional[Playwright] = None
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
+        self.instrument_pages: Dict[str, Page] = {}
 
     def start(self):
-        """Launches the persistent Playwright browser context."""
+        """Launches the persistent Playwright browser context and initializes streaming tabs."""
         logger.info(f"Starting Playwright Chromium browser (Profile: {self.profile_dir}, Headless: {self.config.headless})...")
         self.playwright = sync_playwright().start()
         
@@ -42,7 +42,6 @@ class InvestingScraper:
         ]
 
         try:
-            logger.info("Attempting to launch browser with channel='chrome'...")
             self.context = self.playwright.chromium.launch_persistent_context(
                 user_data_dir=self.profile_dir,
                 channel="chrome",
@@ -51,7 +50,6 @@ class InvestingScraper:
                 args=args,
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
             )
-            logger.info("Launched successfully with channel='chrome'.")
         except Exception as exc:
             logger.warning(f"Could not launch with channel='chrome': {exc}. Falling back to default Chromium...")
             self.context = self.playwright.chromium.launch_persistent_context(
@@ -65,39 +63,47 @@ class InvestingScraper:
         self.context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         pages = self.context.pages
         self.page = pages[0] if pages else self.context.new_page()
-        logger.info("Browser launched successfully.")
+        logger.info("Browser context initialized successfully.")
 
     def navigate_to_watchlist(self) -> bool:
-        """Navigates to the configured Investing.com watchlist URL with retries."""
+        """Navigates main watchlist page and initializes persistent streaming tabs for 2-second extraction."""
         if not self.page:
-            logger.error("Browser page is not initialized.")
             return False
 
         url = self.config.investing_url
-        logger.info(f"Navigating to Investing.com watchlist: {url}")
+        logger.info(f"Navigating main watchlist page: {url}")
         
         try:
-            res = self.page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            res = self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
             status = res.status if res else 'Unknown'
             logger.info(f"Watchlist page loaded. HTTP Status: {status}")
-            self._handle_popups()
-            return True
-        except PlaywrightTimeoutError:
-            logger.warning("Timeout navigating to Investing.com. Retrying reload...")
-            try:
-                res = self.page.reload(wait_until="domcontentloaded", timeout=30000)
-                self._handle_popups()
-                return True
-            except Exception as e:
-                logger.error(f"Failed to load watchlist page: {e}")
-                return False
+            self._handle_popups(self.page)
         except Exception as e:
-            logger.error(f"Error navigating to watchlist: {e}")
-            return False
+            logger.warning(f"Main watchlist navigation notice: {e}")
 
-    def _handle_popups(self):
+        # Initialize persistent streaming tabs for target instruments
+        self._init_instrument_tabs()
+        return True
+
+    def _init_instrument_tabs(self):
+        """Opens persistent streaming tabs for target instruments if not already open."""
+        if not self.context:
+            return
+
+        for name, url in TARGET_INSTRUMENT_URLS.items():
+            if name not in self.instrument_pages or self.instrument_pages[name].is_closed():
+                try:
+                    logger.info(f"Opening persistent streaming tab for '{name}'...")
+                    pg = self.context.new_page()
+                    pg.goto(url, wait_until="domcontentloaded", timeout=25000)
+                    self._handle_popups(pg)
+                    self.instrument_pages[name] = pg
+                except Exception as exc:
+                    logger.warning(f"Notice initializing tab for '{name}': {exc}")
+
+    def _handle_popups(self, target_page: Page):
         """Attempts to accept cookie consent banners or close popups if present."""
-        if not self.page:
+        if not target_page or target_page.is_closed():
             return
         
         consent_selectors = [
@@ -111,78 +117,72 @@ class InvestingScraper:
 
         for selector in consent_selectors:
             try:
-                elem = self.page.query_selector(selector)
+                elem = target_page.query_selector(selector)
                 if elem and elem.is_visible():
-                    logger.info(f"Dismissing banner/popup with selector: {selector}")
-                    elem.click(timeout=3000)
-                    time.sleep(0.5)
+                    elem.click(timeout=2000)
+                    time.sleep(0.3)
             except Exception:
                 pass
 
     def _extract_direct_instruments(self) -> List[Dict[str, Any]]:
-        """Fallback extractor: fetches live market data directly from public instrument pages."""
-        logger.info("Running direct public instrument fallback extractor...")
+        """Instantaneous streaming extractor: evaluates DOM state on open persistent tabs in <10ms."""
         rows = []
+        self._init_instrument_tabs()
 
-        for name, url in TARGET_INSTRUMENT_URLS.items():
+        for name, pg in self.instrument_pages.items():
+            if not pg or pg.is_closed():
+                continue
             try:
-                res = self.page.goto(url, wait_until="domcontentloaded", timeout=15000)
-                if res and res.status == 200:
-                    data = self.page.evaluate("""
-                        () => {
-                            const lastElem = document.querySelector('[data-test="instrument-price-last"], .instrument-price_last__KQA2y, #last_last');
-                            const changeElem = document.querySelector('[data-test="instrument-price-change"], #data_change');
-                            const changePctElem = document.querySelector('[data-test="instrument-price-change-percent"], #data_change_perc');
-                            
-                            // High / Low bounds
-                            const highElem = document.querySelector('[data-test="high-value"], #high_val');
-                            const lowElem = document.querySelector('[data-test="low-value"], #low_val');
-                            const openElem = document.querySelector('[data-test="open-value"], #open_val');
-                            const timeElem = document.querySelector('[data-test="instrument-time"], #quotes_summary_secondary_data_last_time');
+                data = pg.evaluate("""
+                    () => {
+                        const lastElem = document.querySelector('[data-test="instrument-price-last"], .instrument-price_last__KQA2y, #last_last');
+                        const changeElem = document.querySelector('[data-test="instrument-price-change"], #data_change');
+                        const changePctElem = document.querySelector('[data-test="instrument-price-change-percent"], #data_change_perc');
+                        
+                        const highElem = document.querySelector('[data-test="high-value"], #high_val');
+                        const lowElem = document.querySelector('[data-test="low-value"], #low_val');
+                        const openElem = document.querySelector('[data-test="open-value"], #open_val');
+                        const timeElem = document.querySelector('[data-test="instrument-time"], #quotes_summary_secondary_data_last_time');
 
-                            return {
-                                last: lastElem ? lastElem.innerText.trim() : null,
-                                change: changeElem ? changeElem.innerText.trim() : null,
-                                changePct: changePctElem ? changePctElem.innerText.trim() : null,
-                                high: highElem ? highElem.innerText.trim() : null,
-                                low: lowElem ? lowElem.innerText.trim() : null,
-                                open: openElem ? openElem.innerText.trim() : null,
-                                time: timeElem ? timeElem.innerText.trim() : null
-                            };
-                        }
-                    """)
+                        return {
+                            last: lastElem ? lastElem.innerText.trim() : null,
+                            change: changeElem ? changeElem.innerText.trim() : null,
+                            changePct: changePctElem ? changePctElem.innerText.trim() : null,
+                            high: highElem ? highElem.innerText.trim() : null,
+                            low: lowElem ? lowElem.innerText.trim() : null,
+                            open: openElem ? openElem.innerText.trim() : null,
+                            time: timeElem ? timeElem.innerText.trim() : null
+                        };
+                    }
+                """)
 
-                    if data and data.get("last"):
-                        rows.append({
-                            "Name": name,
-                            "Symbol": name if "EUR" in name or "USD" in name else "NSEI",
-                            "Last": data.get("last"),
-                            "Open": data.get("open") or data.get("last"),
-                            "High": data.get("high") or data.get("last"),
-                            "Low": data.get("low") or data.get("last"),
-                            "Change": data.get("change"),
-                            "Change %": data.get("changePct"),
-                            "Volume": None,
-                            "Market Time": data.get("time") or time.strftime("%H:%M:%S")
-                        })
+                if data and data.get("last"):
+                    rows.append({
+                        "Name": name,
+                        "Symbol": name if "EUR" in name or "USD" in name else "NSEI",
+                        "Last": data.get("last"),
+                        "Open": data.get("open") or data.get("last"),
+                        "High": data.get("high") or data.get("last"),
+                        "Low": data.get("low") or data.get("last"),
+                        "Change": data.get("change"),
+                        "Change %": data.get("changePct"),
+                        "Volume": None,
+                        "Market Time": data.get("time") or time.strftime("%H:%M:%S")
+                    })
             except Exception as e:
-                logger.warning(f"Direct fetch for '{name}' notice: {e}")
+                logger.warning(f"Error evaluating tab '{name}': {e}")
 
         cleaned = [clean_watchlist_row(r, self.config.timezone) for r in rows]
         return cleaned
 
     def extract_watchlist_rows(self) -> List[Dict[str, Any]]:
         """
-        Dynamically extracts visible rows from the Investing.com watchlist table.
-        Falls back to direct instrument scraping if watchlist page is restricted.
+        Dynamically extracts visible rows from the Investing.com watchlist table or persistent streaming tabs.
         """
         if not self.page:
-            logger.error("Page is not initialized.")
-            return []
+            return self._extract_direct_instruments()
 
         try:
-            self._handle_popups()
-
             extracted_raw_rows = self.page.evaluate("""
                 () => {
                     const tables = Array.from(document.querySelectorAll('table'));
@@ -248,24 +248,7 @@ class InvestingScraper:
                         }).filter(r => (r.Name || r.Symbol) && (r.Last !== undefined));
                     }
 
-                    const items = Array.from(document.querySelectorAll('[data-test="watchlist-table-row"], [class*="table-row"], [data-test="watchlist-row"]'));
-                    return items.map(item => {
-                        const text = item.innerText.split('\\n').map(s => s.trim()).filter(Boolean);
-                        if (text.length >= 3) {
-                            return {
-                                'Name': text[0],
-                                'Symbol': text[1] || text[0],
-                                'Last': text[2] || '',
-                                'Change': text[3] || '',
-                                'Change %': text[4] || '',
-                                'High': text[5] || '',
-                                'Low': text[6] || '',
-                                'Volume': text[7] || '',
-                                'Market Time': text[8] || ''
-                            };
-                        }
-                        return null;
-                    }).filter(Boolean);
+                    return [];
                 }
             """)
 
@@ -274,21 +257,23 @@ class InvestingScraper:
                 logger.info(f"Extracted {len(cleaned_rows)} instruments from watchlist table.")
                 return cleaned_rows
             else:
-                # If watchlist table returned 0 rows (e.g. 403 on cloud server), run direct public fallback
                 return self._extract_direct_instruments()
 
         except Exception as exc:
-            logger.error(f"Error during watchlist data extraction: {exc}")
+            logger.error(f"Error during watchlist extraction: {exc}")
             return self._extract_direct_instruments()
 
     def close(self):
-        """Closes the browser context and stops Playwright."""
-        logger.info("Closing Playwright browser...")
+        """Closes all streaming tabs and stops Playwright context."""
+        logger.info("Closing Playwright browser and streaming tabs...")
         try:
+            for pg in self.instrument_pages.values():
+                if pg and not pg.is_closed():
+                    pg.close()
             if self.context:
                 self.context.close()
             if self.playwright:
                 self.playwright.stop()
         except Exception as exc:
-            logger.warning(f"Error during Playwright browser shutdown: {exc}")
+            logger.warning(f"Error during Playwright shutdown: {exc}")
         logger.info("Playwright shutdown complete.")
