@@ -9,9 +9,17 @@ from scraper.parser import clean_watchlist_row
 
 logger = logging.getLogger("investing_sync.scraper")
 
+TARGET_INSTRUMENT_URLS = {
+    "EUR/USD": "https://www.investing.com/currencies/eur-usd",
+    "XAU/EUR": "https://www.investing.com/currencies/xau-eur",
+    "XAU/USD": "https://www.investing.com/currencies/xau-usd",
+    "Nifty 50": "https://www.investing.com/indices/s-p-cnx-nifty"
+}
+
 class InvestingScraper:
     """
     Playwright scraper using a persistent browser profile to extract live Investing.com watchlist data.
+    Supports dynamic watchlist table extraction and direct instrument fallback.
     """
 
     def __init__(self, config: Config):
@@ -111,10 +119,62 @@ class InvestingScraper:
             except Exception:
                 pass
 
+    def _extract_direct_instruments(self) -> List[Dict[str, Any]]:
+        """Fallback extractor: fetches live market data directly from public instrument pages."""
+        logger.info("Running direct public instrument fallback extractor...")
+        rows = []
+
+        for name, url in TARGET_INSTRUMENT_URLS.items():
+            try:
+                res = self.page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                if res and res.status == 200:
+                    data = self.page.evaluate("""
+                        () => {
+                            const lastElem = document.querySelector('[data-test="instrument-price-last"], .instrument-price_last__KQA2y, #last_last');
+                            const changeElem = document.querySelector('[data-test="instrument-price-change"], #data_change');
+                            const changePctElem = document.querySelector('[data-test="instrument-price-change-percent"], #data_change_perc');
+                            
+                            // High / Low bounds
+                            const highElem = document.querySelector('[data-test="high-value"], #high_val');
+                            const lowElem = document.querySelector('[data-test="low-value"], #low_val');
+                            const openElem = document.querySelector('[data-test="open-value"], #open_val');
+                            const timeElem = document.querySelector('[data-test="instrument-time"], #quotes_summary_secondary_data_last_time');
+
+                            return {
+                                last: lastElem ? lastElem.innerText.trim() : null,
+                                change: changeElem ? changeElem.innerText.trim() : null,
+                                changePct: changePctElem ? changePctElem.innerText.trim() : null,
+                                high: highElem ? highElem.innerText.trim() : null,
+                                low: lowElem ? lowElem.innerText.trim() : null,
+                                open: openElem ? openElem.innerText.trim() : null,
+                                time: timeElem ? timeElem.innerText.trim() : null
+                            };
+                        }
+                    """)
+
+                    if data and data.get("last"):
+                        rows.append({
+                            "Name": name,
+                            "Symbol": name if "EUR" in name or "USD" in name else "NSEI",
+                            "Last": data.get("last"),
+                            "Open": data.get("open") or data.get("last"),
+                            "High": data.get("high") or data.get("last"),
+                            "Low": data.get("low") or data.get("last"),
+                            "Change": data.get("change"),
+                            "Change %": data.get("changePct"),
+                            "Volume": None,
+                            "Market Time": data.get("time") or time.strftime("%H:%M:%S")
+                        })
+            except Exception as e:
+                logger.warning(f"Direct fetch for '{name}' notice: {e}")
+
+        cleaned = [clean_watchlist_row(r, self.config.timezone) for r in rows]
+        return cleaned
+
     def extract_watchlist_rows(self) -> List[Dict[str, Any]]:
         """
         Dynamically extracts visible rows from the Investing.com watchlist table.
-        Auto-detects columns and instrument additions/removals.
+        Falls back to direct instrument scraping if watchlist page is restricted.
         """
         if not self.page:
             logger.error("Page is not initialized.")
@@ -179,7 +239,7 @@ class InvestingScraper:
                                 else if (hLower.includes('high')) rowData['High'] = val;
                                 else if (hLower.includes('low')) rowData['Low'] = val;
                                 else if (hLower.includes('chg.%') || hLower.includes('chg %') || hLower.includes('change %')) rowData['Change %'] = val;
-                                else if (hLower.includes('chg') || hLower.includes('change')) rowData['Change'] = val;
+                                else if (hLower.includes('change') || hLower.includes('chg')) rowData['Change'] = val;
                                 else if (hLower.includes('vol')) rowData['Volume'] = val;
                                 else if (hLower.includes('time') || hLower.includes('date')) rowData['Market Time'] = val;
                             });
@@ -188,7 +248,6 @@ class InvestingScraper:
                         }).filter(r => (r.Name || r.Symbol) && (r.Last !== undefined));
                     }
 
-                    // Fallback to div rows
                     const items = Array.from(document.querySelectorAll('[data-test="watchlist-table-row"], [class*="table-row"], [data-test="watchlist-row"]'));
                     return items.map(item => {
                         const text = item.innerText.split('\\n').map(s => s.trim()).filter(Boolean);
@@ -210,13 +269,17 @@ class InvestingScraper:
                 }
             """)
 
-            cleaned_rows = [clean_watchlist_row(row, self.config.timezone) for row in extracted_raw_rows]
-            logger.info(f"Extracted {len(cleaned_rows)} instruments from watchlist.")
-            return cleaned_rows
+            if extracted_raw_rows:
+                cleaned_rows = [clean_watchlist_row(row, self.config.timezone) for row in extracted_raw_rows]
+                logger.info(f"Extracted {len(cleaned_rows)} instruments from watchlist table.")
+                return cleaned_rows
+            else:
+                # If watchlist table returned 0 rows (e.g. 403 on cloud server), run direct public fallback
+                return self._extract_direct_instruments()
 
         except Exception as exc:
             logger.error(f"Error during watchlist data extraction: {exc}")
-            return []
+            return self._extract_direct_instruments()
 
     def close(self):
         """Closes the browser context and stops Playwright."""
