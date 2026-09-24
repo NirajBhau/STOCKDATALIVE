@@ -1,4 +1,4 @@
-# Use official Playwright Python base image with Chromium pre-installed
+# Use official Playwright Python base image
 FROM mcr.microsoft.com/playwright/python:v1.48.0-jammy
 
 # Set working directory
@@ -7,6 +7,9 @@ WORKDIR /app
 # Copy requirements and install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Ensure matching Playwright Chromium browser is installed inside the image
+RUN playwright install chromium
 
 # Copy project files
 COPY . .
