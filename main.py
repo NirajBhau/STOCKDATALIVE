@@ -9,6 +9,30 @@ from google_sheets import GoogleSheetsClient
 
 logger = setup_logger("investing_sync")
 
+import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"OK - Investing.com Live Sync Running")
+
+    def log_message(self, format, *args):
+        pass
+
+def start_health_server():
+    port = int(os.getenv("PORT", "8080"))
+    try:
+        server = HTTPServer(("0.0.0.0", port), HealthHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        logger.info(f"Health check HTTP server running on port {port}.")
+    except Exception as exc:
+        logger.warning(f"Could not start health check HTTP server: {exc}")
+
 class RealTimeInvestingSyncApp:
     def __init__(self):
         self.config = load_config()
@@ -30,6 +54,8 @@ class RealTimeInvestingSyncApp:
         logger.info("==================================================")
         logger.info("Starting Investing.com -> Google Sheets Sync App")
         logger.info("==================================================")
+
+        start_health_server()
 
         # 1. Validate Configuration
         errors = validate_config(self.config)
