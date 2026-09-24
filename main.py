@@ -105,6 +105,11 @@ class RealTimeInvestingSyncApp:
                 if cleaned_rows:
                     logger.info(f"Successfully extracted {len(cleaned_rows)} instruments.")
                     
+                    if not sheets_connected:
+                        sheets_connected = self.sheets_client.connect()
+                        if sheets_connected:
+                            self.sheets_client.setup_worksheets_and_formatting()
+
                     if sheets_connected:
                         sync_ok = self.sheets_client.sync_data(cleaned_rows)
                         if sync_ok:

@@ -79,6 +79,8 @@ class GoogleSheetsClient:
             if cred_json_str:
                 import json
                 cred_dict = json.loads(cred_json_str)
+                if "private_key" in cred_dict and isinstance(cred_dict["private_key"], str):
+                    cred_dict["private_key"] = cred_dict["private_key"].replace("\\n", "\n")
                 self.gc = gspread.service_account_from_dict(cred_dict)
             else:
                 self.gc = gspread.service_account(filename=self.config.google_credentials_file)
