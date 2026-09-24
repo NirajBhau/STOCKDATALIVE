@@ -1,0 +1,16 @@
+[Unit]
+Description=Investing.com to Google Sheets 2-Sec Realtime Sync Service
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/STOCKDATALIVE
+ExecStart=/home/ubuntu/STOCKDATALIVE/.venv/bin/python main.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=HEADLESS=true
+
+[Install]
+WantedBy=multi-user.target

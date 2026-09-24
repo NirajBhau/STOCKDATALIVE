@@ -1,0 +1,7 @@
+services:
+  - type: worker
+    name: investing-sheets-sync
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    autoDeploy: true

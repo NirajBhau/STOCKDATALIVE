@@ -1,0 +1,11 @@
+.env
+credentials/*.json
+!credentials/.gitkeep
+playwright_profile/
+logs/*.log
+!logs/.gitkeep
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
