@@ -74,7 +74,7 @@ class InvestingScraper:
         logger.info(f"Navigating main watchlist page: {url}")
         
         try:
-            res = self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            res = self.page.goto(url, wait_until="commit", timeout=12000)
             status = res.status if res else 'Unknown'
             logger.info(f"Watchlist page loaded. HTTP Status: {status}")
             self._handle_popups(self.page)
@@ -95,8 +95,7 @@ class InvestingScraper:
                 try:
                     logger.info(f"Opening persistent streaming tab for '{name}'...")
                     pg = self.context.new_page()
-                    pg.goto(url, wait_until="domcontentloaded", timeout=25000)
-                    self._handle_popups(pg)
+                    pg.goto(url, wait_until="commit", timeout=12000)
                     self.instrument_pages[name] = pg
                 except Exception as exc:
                     logger.warning(f"Notice initializing tab for '{name}': {exc}")
