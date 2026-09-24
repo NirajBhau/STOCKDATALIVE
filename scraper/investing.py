@@ -132,16 +132,22 @@ class InvestingScraper:
             if not pg or pg.is_closed():
                 continue
             try:
+                # Ensure price node is present
+                try:
+                    pg.wait_for_selector('[data-test="instrument-price-last"], [class*="instrument-price_last"], #last_last, [class*="price-last"], [class*="price_last"], span[class*="text-2xl"]', timeout=3000)
+                except Exception:
+                    pass
+
                 data = pg.evaluate("""
                     () => {
-                        const lastElem = document.querySelector('[data-test="instrument-price-last"], .instrument-price_last__KQA2y, #last_last');
-                        const changeElem = document.querySelector('[data-test="instrument-price-change"], #data_change');
-                        const changePctElem = document.querySelector('[data-test="instrument-price-change-percent"], #data_change_perc');
+                        const lastElem = document.querySelector('[data-test="instrument-price-last"], [class*="instrument-price_last"], #last_last, [class*="price-last"], [class*="price_last"], span[class*="text-2xl"], div[class*="text-2xl"]');
+                        const changeElem = document.querySelector('[data-test="instrument-price-change"], [class*="instrument-price_change"], #data_change, [class*="price-change"]');
+                        const changePctElem = document.querySelector('[data-test="instrument-price-change-percent"], [class*="instrument-price_change-percent"], #data_change_perc, [class*="price-change-percent"]');
                         
-                        const highElem = document.querySelector('[data-test="high-value"], #high_val');
-                        const lowElem = document.querySelector('[data-test="low-value"], #low_val');
-                        const openElem = document.querySelector('[data-test="open-value"], #open_val');
-                        const timeElem = document.querySelector('[data-test="instrument-time"], #quotes_summary_secondary_data_last_time');
+                        const highElem = document.querySelector('[data-test="high-value"], #high_val, [class*="high-value"]');
+                        const lowElem = document.querySelector('[data-test="low-value"], #low_val, [class*="low-value"]');
+                        const openElem = document.querySelector('[data-test="open-value"], #open_val, [class*="open-value"]');
+                        const timeElem = document.querySelector('[data-test="instrument-time"], #quotes_summary_secondary_data_last_time, [class*="instrument-time"]');
 
                         return {
                             last: lastElem ? lastElem.innerText.trim() : null,
